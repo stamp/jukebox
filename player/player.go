@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"path"
+	"flag"
+	"github.com/Sirupsen/logrus"
 
 	"github.com/veandco/go-sdl2/mix"
 )
+
+var songpath = flag.String("path", "songs", "songs path")
 
 type Song struct {
 	Name     string
@@ -14,6 +18,7 @@ type Song struct {
 }
 
 func NewSong(filename string) Song {
+	logrus.Infof("New song %s", filename)
 	return Song{
 		Name:     path.Base(filename),
 		Filename: filename,
@@ -35,19 +40,21 @@ func (p *Player) Start() error {
 		return err
 	}
 
-	files, err := ioutil.ReadDir("songs")
-	if err != nil {
-		return err
-	}
-
-	for _, file := range files {
-		p.playlist = append(p.playlist, NewSong("songs/"+file.Name()))
-	}
-
 	mix.HookMusicFinished(func() {
 		p.playing = 0
 		p.PlayNext()
 	})
+
+	files, err := ioutil.ReadDir(*songpath)
+	if err != nil {
+		logrus.Error("Failed to read dir %s: %s", *songpath, err.Error())
+		return err
+	}
+
+	for _, file := range files {
+		p.playlist = append(p.playlist, NewSong(path.Join(*songpath,file.Name())))
+	}
+
 
 	return nil
 }
@@ -59,12 +66,15 @@ func (p *Player) Play(index int) error {
 
 	song := p.playlist[index]
 	p.playing = index + 1
+	p.SendUpdate()
 
-	for _, v := range p.playlistChangeCallbacks {
-		v(p.playing, p.queue)
+	err := p.play(song.Filename)
+	if err != nil {
+		p.playing = 0
+		p.SendUpdate()
+		logrus.Infof("Failed playback of %s: %s", song.Filename, err.Error())
 	}
-
-	return p.play(song.Filename)
+	return err
 }
 
 func (p *Player) PlayNext() error {
@@ -73,9 +83,7 @@ func (p *Player) PlayNext() error {
 	}
 
 	if len(p.queue) == 0 {
-		for _, v := range p.playlistChangeCallbacks {
-			v(p.playing, p.queue)
-		}
+		p.SendUpdate()
 		return nil
 	}
 
@@ -83,6 +91,12 @@ func (p *Player) PlayNext() error {
 	p.queue = p.queue[1:]
 
 	return p.Play(next)
+}
+
+func (p *Player) SendUpdate() {
+	for _, v := range p.playlistChangeCallbacks {
+		v(p.playing, p.queue)
+	}
 }
 
 func (p *Player) Queue(index int) error {
@@ -95,9 +109,7 @@ func (p *Player) Queue(index int) error {
 	for k, v := range p.queue {
 		if v == index {
 			p.queue = append(p.queue[:k], p.queue[k+1:]...)
-			for _, v := range p.playlistChangeCallbacks {
-				v(p.playing, p.queue)
-			}
+			p.SendUpdate()
 			return nil
 		}
 	}
@@ -106,9 +118,7 @@ func (p *Player) Queue(index int) error {
 	p.queue = append(p.queue, index)
 
 	// Update the arduino
-	for _, v := range p.playlistChangeCallbacks {
-		v(p.playing, p.queue)
-	}
+	p.SendUpdate()
 
 	// Start playback if it isnt already running
 	return p.PlayNext()
